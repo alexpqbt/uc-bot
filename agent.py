@@ -2,14 +2,14 @@ from langchain.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessageChunk
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.documents import Document
 from deep_translator import GoogleTranslator
 from config import vector_store
 import gradio as gr
 
-PREMIUM = True
+PREMIUM = False
 
 SYSTEM_PROMPT = """Your name is UC Atlas. You are an official virtual assistant for the University of Cebu (UC). \
 You help students, faculty, applicants, and visitors find accurate information about the university.
@@ -19,13 +19,13 @@ You help students, faculty, applicants, and visitors find accurate information a
 - Pass the user's question exactly as-is to retrieve_context.
 - After retrieving, carefully read ALL content returned and use it to form your answer.
 - Only say you don't have information if the retrieved content is truly empty or irrelevant.
-- If the context lacks sufficient information, respond with:
-  "I'm sorry, I don't have that information available. Please contact the University of Cebu directly for assistance."
 
 ## After Calling retrieve_context
 - Read the full content returned by the tool carefully.
 - The content contains the answer — extract and present it clearly.
 - Do NOT say you lack information if the tool returned any content at all.
+- If the context lacks sufficient information or has no information, respond with:
+  "I'm sorry, I don't have that information available. Please contact the University of Cebu directly for assistance."
 
 ## Scope
 You can ONLY assist with UC-related topics:
@@ -39,7 +39,7 @@ You can ONLY assist with UC-related topics:
 For off-topic questions, politely decline and remind the user of your purpose. Do not answer them.
 
 ## Response Format
-- Be concise. Only include what is necessary to answer the question.
+- Be concise. ONLY include what is necessary to answer the question.
 - Use bullet points or numbered lists only when presenting multiple items.
 - If information differs per campus, clearly distinguish between them.
 - Cite the source URL from the retrieved context at the end of your response.
@@ -64,7 +64,7 @@ def retrieve_context(query: str):
     query argument accepts a literal string, not a dictionary or object. Just a string.
     """
     translated_query = normalize_query(query)
-    top_docs = vector_store.max_marginal_relevance_search(translated_query, k=3)
+    top_docs = vector_store.max_marginal_relevance_search(translated_query, k=2)
 
     if not top_docs:
         return "No relevant information."
@@ -96,49 +96,28 @@ def retrieve_context(query: str):
     return output 
 
 def create_app(agent):
-    async def generate_tokens(query, history):
-        history.append(
-            gr.ChatMessage(
-                role="user",
-                content=query
-            )
-        )
-
+    def generate_tokens(query, history):
         response = ""
-        async for chunk in agent.astream(
+        for chunk in agent.stream(
             { "messages" : [{ "role" : "user", "content" : query }]},
             { "configurable" : { "thread_id" : "1" }},
             stream_mode="messages",
             version="v2"
         ):
             msg, _ = chunk["data"]
-            if isinstance(msg, ToolMessage):
-                history.append(
-                    gr.ChatMessage(
-                        role="assistant",
-                        content="idk",
-                        metadata={"title": "use tool ig"}
-                    )
-                )
+            msg.pretty_print()
             if isinstance(msg, AIMessageChunk) and msg.content:
                 response += str(msg.content)
                 yield response
-
-        history.append(
-            gr.ChatMessage(
-                role="system",
-                content=response
-            )
-        )
 
     return gr.ChatInterface(fn=generate_tokens)
             
 def main():
     model = (
-        ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", thinking_budget=0)
+        ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite")
         if PREMIUM else
-        ChatOllama(model="llama3.2:latest", temperature=0.1, num_ctx=8192)
-    ) 
+        ChatOllama(model="llama3.2:latest", temperature=0, num_ctx=8192)
+    )
 
     agent = create_agent(
         model=model,

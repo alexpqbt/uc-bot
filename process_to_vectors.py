@@ -4,9 +4,6 @@ from config import vector_store
 from pathlib import Path
 import time
 import json
-import hashlib
-
-vector_store.reset_collection() 
 
 json_file = Path("./data/cleaned_pages.json")
 
@@ -16,7 +13,7 @@ text_splitter = RecursiveCharacterTextSplitter(
     add_start_index=True
 )
 
-def send_batches(splits, ids, batch_size = 25, delay = 61):
+def send_batches(splits, batch_size = 25, delay = 61):
     total_batches = (len(splits) + batch_size - 1) // batch_size
 
     for i in range(0, len(splits), batch_size):
@@ -26,7 +23,7 @@ def send_batches(splits, ids, batch_size = 25, delay = 61):
 
         start_time = time.time()
 
-        vector_store.add_documents(documents=batch, ids=ids)
+        vector_store.add_documents(documents=batch)
 
         elapsed = time.time() - start_time
 
@@ -47,10 +44,6 @@ def metadata_func(record, metadata):
 
     return metadata
 
-def generate_id(doc):
-    unique_str = f"{doc.metadata.get("url", "")}:{doc.metadata.get("start_index", "")}"
-    return hashlib.md5(unique_str.encode()).hexdigest()
-
 with open(json_file, "r") as f:
     data = json.load(f)
 
@@ -63,6 +56,5 @@ loader = JSONLoader(
 
 docs = loader.load()
 splits = text_splitter.split_documents(docs)
-ids = [generate_id(doc) for doc in splits]
 
-send_batches(splits, ids)
+send_batches(splits)
