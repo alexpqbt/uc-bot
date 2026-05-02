@@ -9,17 +9,23 @@ from deep_translator import GoogleTranslator
 from config import vector_store
 import gradio as gr
 
-PREMIUM = False
+PREMIUM = True
 
 SYSTEM_PROMPT = """Your name is UC Atlas. You are an official virtual assistant for the University of Cebu (UC). \
 You help students, faculty, applicants, and visitors find accurate information about the university.
 
 ## Tool Usage
 - ALWAYS call retrieve_context before answering any UC-related question, no exceptions.
-- Call retrieve_context ONCE per question. Do not call it multiple times for the same query.
-- Base your answer STRICTLY on the retrieved context. Never guess or fabricate details.
+- Pass the user's question exactly as-is to retrieve_context.
+- After retrieving, carefully read ALL content returned and use it to form your answer.
+- Only say you don't have information if the retrieved content is truly empty or irrelevant.
 - If the context lacks sufficient information, respond with:
   "I'm sorry, I don't have that information available. Please contact the University of Cebu directly for assistance."
+
+## After Calling retrieve_context
+- Read the full content returned by the tool carefully.
+- The content contains the answer — extract and present it clearly.
+- Do NOT say you lack information if the tool returned any content at all.
 
 ## Scope
 You can ONLY assist with UC-related topics:
@@ -58,37 +64,36 @@ def retrieve_context(query: str):
     query argument accepts a literal string, not a dictionary or object. Just a string.
     """
     translated_query = normalize_query(query)
-    top_docs = vector_store.max_marginal_relevance_search(translated_query, k=1)
+    top_docs = vector_store.max_marginal_relevance_search(translated_query, k=3)
 
     if not top_docs:
         return "No relevant information."
     
-    top_doc = top_docs[0]
-    seq_num = top_doc.metadata.get("seq_num")
+    all_docs = []
+    seen_seq_num = set()
+    for top_doc in top_docs:
+        seq_num = top_doc.metadata.get("seq_num")
+        if not seq_num or seq_num in seen_seq_num:
+            continue
+        seen_seq_num.add(seq_num)
 
-    if not seq_num:
-        return "No relevant information."
-
-    results = vector_store.get(where={ "seq_num": int(seq_num) })
-
-    sibling_chunks = [
-        Document(page_content=doc, metadata=meta)
-        for doc, meta in zip(results["documents"], results["metadatas"])
-    ]
-
-    sorted_siblings = sorted(sibling_chunks, key=lambda d: d.metadata.get("start_index", 0))
-
-    broader_docs = vector_store.max_marginal_relevance_search(translated_query, k=5)
-    extra_docs = [doc for doc in broader_docs if int(doc.metadata.get("seq_num", -1)) != int(seq_num)]
-
-    all_docs = sorted_siblings + extra_docs
+        results = vector_store.get(where={ "seq_num": int(seq_num) })
+        sibling_chunks = [
+            Document(page_content=doc, metadata=meta)
+            for doc, meta in zip(results["documents"], results["metadatas"])
+        ]
+        sorted_siblings = sorted(sibling_chunks, key=lambda d: d.metadata.get("start_index", -1))
+        all_docs.extend(sorted_siblings)
 
     serialized = "\n\n".join(
-        f"Source: {doc.metadata}\nContent:\n {doc.page_content}"
-        for doc in all_docs
+        f"# Document {i + 1}\n"
+        f"Source: {doc.metadata.get("url")}\n"
+        f"Content:\n {doc.page_content}"
+        for i, doc in enumerate(all_docs)
     )
 
-    return serialized 
+    output = f"Retrieved {len(all_docs)} relevant documents:\n\n{serialized}"  
+    return output 
 
 def create_app(agent):
     async def generate_tokens(query, history):
@@ -125,13 +130,12 @@ def create_app(agent):
                 content=response
             )
         )
-        print(history)
 
     return gr.ChatInterface(fn=generate_tokens)
             
 def main():
     model = (
-        ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite")
+        ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", thinking_budget=0)
         if PREMIUM else
         ChatOllama(model="llama3.2:latest", temperature=0.1, num_ctx=8192)
     ) 
@@ -143,6 +147,7 @@ def main():
         checkpointer=InMemorySaver(),
     )
 
+    print("Model being used:", model.get_name())
     app = create_app(agent)
     app.launch()
 
